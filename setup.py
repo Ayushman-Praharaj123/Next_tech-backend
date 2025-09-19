@@ -12,7 +12,7 @@ def run_command(command):
     """Run shell command and return success status"""
     try:
         result = subprocess.run(command, shell=True, check=True, capture_output=True, text=True)
-        print(f"✅ {command}")
+        print(f"{command}")
         return True
     except subprocess.CalledProcessError as e:
         print(f"❌ {command}")
@@ -20,7 +20,7 @@ def run_command(command):
         return False
 
 def main():
-    print("🚀 Guard-X Backend Setup")
+    print("Guard-X Backend Setup")
     print("=" * 40)
     
     # Check Python version
@@ -28,15 +28,15 @@ def main():
         print("❌ Python 3.8+ required")
         return False
     
-    print(f"✅ Python {sys.version}")
+    print(f"Python {sys.version}")
     
     # Create virtual environment
-    print("\n📦 Setting up virtual environment...")
+    print("\n Setting up virtual environment...")
     if not run_command("python -m venv venv"):
         return False
     
     # Activate virtual environment and install packages
-    print("\n📥 Installing dependencies...")
+    print("\nInstalling dependencies...")
     
     # Windows activation
     if os.name == 'nt':
@@ -54,11 +54,11 @@ def main():
     models_dir = Path("models")
     if not models_dir.exists():
         models_dir.mkdir()
-        print("✅ Created models/ directory")
+        print(" Created models/ directory")
     
     print("\n" + "=" * 40)
-    print("✅ Setup complete!")
-    print("\n📋 Next steps:")
+    print("Setup complete!")
+    print("\n Next steps:")
     print("1. Put your trained model in: models/best.pt")
     print("2. Run server: python run_server.py")
     print("3. Or activate venv and run: python app.py")

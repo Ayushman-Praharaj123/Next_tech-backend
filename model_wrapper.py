@@ -1,134 +1,171 @@
 import torch
 import cv2
 import numpy as np
-from PIL import Image
-import time
-import sys
+from ultralytics import YOLO
 from pathlib import Path
+import time
+from PIL import Image
 import asyncio
 
 class ModelWrapper:
     def __init__(self):
         self.models = {}
         self.active_model_name = None
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.confidence_threshold = 0.5
+        self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
         
     async def load_models(self):
-        """Load all available models"""
-        models_dir = Path("models")
+        """Load both custom and fallback models"""
+        print("🔄 Loading AI models...")
         
-        # Try to load custom model first
-        custom_model_path = models_dir / "best.pt"
+        # Try to load custom trained model first
+        custom_model_path = Path("models/best.pt")
         if custom_model_path.exists():
-            await self._load_custom_model(custom_model_path)
+            try:
+                self.models['custom'] = YOLO(str(custom_model_path))
+                self.active_model_name = 'custom'
+                print(f"✅ Custom model loaded: {custom_model_path}")
+            except Exception as e:
+                print(f"❌ Custom model failed: {e}")
         
-        # Load YOLO as fallback
-        await self._load_yolo_model()
+        # Load fallback YOLO model
+        try:
+            self.models['yolo'] = YOLO('yolov8n.pt')
+            if not self.active_model_name:
+                self.active_model_name = 'yolo'
+            print("✅ YOLO fallback model loaded")
+        except Exception as e:
+            print(f"❌ YOLO model failed: {e}")
+            
+        print(f"🎯 Active model: {self.active_model_name}")
+    
+    async def detect_humans(self, image, confidence=None):
+        """Enhanced human detection with better accuracy"""
+        print(f"🔄 Starting detection with model: {self.active_model_name}")
         
-        # Set active model
-        if "custom" in self.models:
-            self.active_model_name = "custom"
-            print("✅ Using custom trained model")
-        elif "yolo" in self.models:
-            self.active_model_name = "yolo"
-            print("✅ Using YOLO ultralytics model")
-        else:
+        if not self.models:
             print("❌ No models loaded!")
-    
-    async def _load_custom_model(self, model_path):
-        """Load custom trained model"""
-        try:
-            from ultralytics import YOLO
-            model = YOLO(str(model_path))
-            self.models["custom"] = {
-                "model": model,
-                "type": "custom_yolo",
-                "path": str(model_path),
-                "loaded": True
-            }
-            print(f"✅ Custom model loaded: {model_path}")
-        except Exception as e:
-            print(f"❌ Failed to load custom model: {e}")
-    
-    async def _load_yolo_model(self):
-        """Load YOLO ultralytics model as fallback"""
-        try:
-            from ultralytics import YOLO
-            model = YOLO('yolov8n.pt')  # Downloads automatically if not present
-            self.models["yolo"] = {
-                "model": model,
-                "type": "yolo_ultralytics",
-                "path": "yolov8n.pt",
-                "loaded": True
-            }
-            print("✅ YOLO ultralytics model loaded")
-        except Exception as e:
-            print(f"❌ Failed to load YOLO model: {e}")
-    
-    async def detect_humans(self, image):
-        """Run human detection on image"""
-        if not self.active_model_name or self.active_model_name not in self.models:
-            raise Exception("No active model available")
+            raise Exception("No models loaded")
+            
+        if self.active_model_name not in self.models:
+            print(f"❌ Active model {self.active_model_name} not found!")
+            raise Exception(f"Active model {self.active_model_name} not available")
+            
+        conf = confidence or self.confidence_threshold
+        model = self.models[self.active_model_name]
+        
+        print(f"🎯 Using model: {self.active_model_name}, confidence: {conf}")
         
         start_time = time.time()
         
-        # Get active model
-        model_info = self.models[self.active_model_name]
-        model = model_info["model"]
+        # Convert PIL to numpy array
+        img_array = np.array(image)
+        print(f"📊 Image array shape: {img_array.shape}")
         
-        # Save temp image for processing
-        temp_path = f"temp_detection_{int(time.time())}.jpg"
-        image.save(temp_path)
+        # Run detection
+        print("🤖 Running YOLO detection...")
+        results = model(img_array, conf=conf, classes=[0])  # class 0 = person
+        print(f"📋 YOLO results: {len(results)} result(s)")
+        
+        processing_time = time.time() - start_time
+        
+        # Extract results
+        boxes = []
+        confidences = []
+        
+        if len(results) > 0 and results[0].boxes is not None:
+            print(f"📦 Found {len(results[0].boxes)} boxes")
+            for i, box in enumerate(results[0].boxes):
+                # Get coordinates (x1, y1, x2, y2)
+                coords = box.xyxy[0].cpu().numpy()
+                confidence = box.conf[0].cpu().numpy()
+                
+                print(f"   Box {i+1}: coords={coords}, conf={confidence}")
+                
+                boxes.append([
+                    float(coords[0]), float(coords[1]), 
+                    float(coords[2]), float(coords[3])
+                ])
+                confidences.append(float(confidence))
+        else:
+            print("📦 No boxes detected")
+        
+        result = {
+            "boxes": boxes,
+            "count": len(boxes),
+            "confidences": confidences,
+            "model_type": self.active_model_name,
+            "processing_time": round(processing_time, 3),
+            "confidence_threshold": conf
+        }
+        
+        print(f"✅ Final result: {result}")
+        return result
+    
+    async def detect_realtime_frame(self, frame):
+        """Optimized detection for real-time video frames"""
+        if not self.models or self.active_model_name not in self.models:
+            return {"boxes": [], "count": 0, "confidences": []}
+            
+        model = self.models[self.active_model_name]
         
         try:
-            # Run inference
-            results = model(temp_path)
+            # Resize frame for faster processing
+            height, width = frame.shape[:2]
+            scale_factor = 1.0
+            
+            if width > 640:
+                scale_factor = 640 / width
+                new_width = 640
+                new_height = int(height * scale_factor)
+                frame = cv2.resize(frame, (new_width, new_height))
+                
+            # Run detection with lower confidence for real-time
+            results = model(frame, conf=0.3, classes=[0], verbose=False)
             
             boxes = []
             confidences = []
             
-            # Process results
-            for result in results:
-                for box in result.boxes:
-                    # Check if detected class is 'person' (class 0 in COCO)
-                    if int(box.cls) == 0:  # Person class
-                        confidence = float(box.conf)
-                        if confidence > 0.5:  # Confidence threshold
-                            # Get bounding box coordinates
-                            x1, y1, x2, y2 = box.xyxy[0].tolist()
-                            boxes.append([int(x1), int(y1), int(x2), int(y2)])
-                            confidences.append(round(confidence, 3))
-            
-            processing_time = round(time.time() - start_time, 3)
+            if len(results) > 0 and results[0].boxes is not None:
+                for box in results[0].boxes:
+                    coords = box.xyxy[0].cpu().numpy()
+                    confidence = box.conf[0].cpu().numpy()
+                    
+                    # Scale back to original size if resized
+                    if scale_factor != 1.0:
+                        coords = coords / scale_factor
+                    
+                    boxes.append([
+                        float(coords[0]), float(coords[1]), 
+                        float(coords[2]), float(coords[3])
+                    ])
+                    confidences.append(float(confidence))
             
             return {
                 "boxes": boxes,
                 "count": len(boxes),
-                "confidences": confidences,
-                "model_type": model_info["type"],
-                "processing_time": processing_time
+                "confidences": confidences
             }
             
-        finally:
-            # Clean up temp file
-            if Path(temp_path).exists():
-                Path(temp_path).unlink()
+        except Exception as e:
+            print(f"❌ Real-time detection error: {e}")
+            return {"boxes": [], "count": 0, "confidences": []}
     
     async def get_health_status(self):
-        """Get system health status"""
+        """Get model health status"""
         return {
             "models_loaded": len(self.models) > 0,
+            "active_model": self.active_model_name,
+            "available_models": list(self.models.keys()),
+            "device": self.device,
+            "confidence_threshold": self.confidence_threshold,
             "models": {
                 name: {
-                    "type": info["type"],
-                    "loaded": info["loaded"],
-                    "active": name == self.active_model_name
-                }
-                for name, info in self.models.items()
-            },
-            "python_version": sys.version,
-            "torch_version": torch.__version__,
-            "device": str(self.device)
+                    "loaded": True,
+                    "type": "YOLO" if name == "yolo" else "Custom",
+                    "status": "OPERATIONAL"
+                } for name in self.models.keys()
+            }
         }
     
     async def get_models_info(self):
@@ -143,3 +180,7 @@ class ModelWrapper:
             }
             for name, info in self.models.items()
         ]
+
+
+
+
